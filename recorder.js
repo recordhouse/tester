@@ -10,7 +10,6 @@
   const SCROLL_INDICATOR_MS = 760;
   const QUIET_MS = 140;
   const TARGET_WAIT_MS = 7000;
-  const REPLAY_BOOT_DELAY_MS = 350;
 
   const state = {
     events: [],
@@ -497,9 +496,9 @@
     state.recordButton.disabled = state.isReplaying;
     state.recordButton.setAttribute("aria-pressed", state.isRecording ? "true" : "false");
 
-    state.replayButton.textContent = state.isReplaying ? "재생중" : "재생";
+    state.replayButton.textContent = state.isReplaying ? "중지" : "재생";
     state.replayButton.dataset.state = state.isReplaying ? "replaying" : "idle";
-    state.replayButton.disabled = state.isRecording || state.isReplaying || !state.events.length;
+    state.replayButton.disabled = state.isRecording || (!state.isReplaying && !state.events.length);
     state.replayButton.setAttribute("aria-pressed", state.isReplaying ? "true" : "false");
   }
 
@@ -534,7 +533,14 @@
     });
 
     replayButton.addEventListener("click", () => {
-      if (state.isRecording || state.isReplaying || !state.events.length) return;
+      if (state.isRecording) return;
+
+      if (state.isReplaying) {
+        stopReplay();
+        return;
+      }
+
+      if (!state.events.length) return;
       replay();
     });
 
@@ -574,6 +580,12 @@
     persist();
   }
 
+  function stopReplay() {
+    state.replayAbort = true;
+    state.isReplaying = false;
+    syncControlState();
+  }
+
   async function replay({ resumeRecording = false } = {}) {
     if (!state.events.length || state.isReplaying) return;
 
@@ -592,9 +604,12 @@
       const scheduledAt = replayStart + event.at;
       const waitMs = scheduledAt - performance.now();
       if (waitMs > 0) await sleep(waitMs);
+      if (state.replayAbort) break;
 
       await waitForIdle();
+      if (state.replayAbort) break;
       await playEvent(event);
+      if (state.replayAbort) break;
       await waitForIdle();
     }
 
@@ -631,15 +646,12 @@
     createControl();
     attachListeners();
 
-    const wasRecording = Boolean(state.meta.isRecording);
-    if (!state.events.length) {
-      syncControlState();
+    if (state.meta.isRecording) {
+      startRecording({ append: true });
       return;
     }
 
-    window.setTimeout(() => {
-      replay({ resumeRecording: wasRecording });
-    }, REPLAY_BOOT_DELAY_MS);
+    syncControlState();
   }
 
   if (document.readyState === "loading") {
@@ -651,6 +663,7 @@
   window.UserFlowTester = Object.freeze({
     start: () => startRecording({ append: false }),
     stop: stopRecording,
+    stopReplay,
     replay: () => replay(),
     clear: () => {
       state.events = [];
