@@ -1,0 +1,664 @@
+(() => {
+  "use strict";
+
+  const STORAGE_KEY = "user-flow-tester:events:v1";
+  const META_KEY = "user-flow-tester:meta:v1";
+  const CONTROL_ATTR = "data-recorder-ignore";
+  const CONTROL_CLASS = "flow-recorder";
+  const SCROLL_SAMPLE_MS = 80;
+  const CLICK_PULSE_MS = 520;
+  const SCROLL_INDICATOR_MS = 760;
+  const QUIET_MS = 140;
+  const TARGET_WAIT_MS = 7000;
+  const REPLAY_BOOT_DELAY_MS = 350;
+
+  const state = {
+    events: [],
+    isRecording: false,
+    isReplaying: false,
+    startAt: 0,
+    pendingRequests: 0,
+    lastMutationAt: performance.now(),
+    scrollLastAt: new Map(),
+    scrollTimers: new Map(),
+    replayAbort: false,
+    recordButton: null,
+    replayButton: null,
+    scrollIndicator: null,
+    scrollIndicatorTimer: 0,
+    meta: readJson(META_KEY, {}),
+  };
+
+  function readJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
+  function writeJson(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (error) {
+      console.warn("[FlowTester] localStorage 저장에 실패했습니다.", error);
+    }
+  }
+
+  function persist() {
+    writeJson(STORAGE_KEY, state.events);
+    writeJson(META_KEY, {
+      ...state.meta,
+      isRecording: state.isRecording,
+      updatedAt: Date.now(),
+      version: 1,
+    });
+  }
+
+  function cssEscape(value) {
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(value);
+    }
+
+    return String(value).replace(/["\\#.;:[\],>+~*^$|=()\s]/g, "\\$&");
+  }
+
+  function cssStringEscape(value) {
+    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function isIgnoredTarget(target) {
+    return Boolean(target.closest && target.closest(`[${CONTROL_ATTR}]`));
+  }
+
+  function isFormValueElement(element) {
+    return (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement ||
+      element.isContentEditable
+    );
+  }
+
+  function getElementValue(element) {
+    if (element instanceof HTMLInputElement) {
+      if (element.type === "checkbox" || element.type === "radio") {
+        return { checked: element.checked, value: element.value };
+      }
+
+      return { value: element.value };
+    }
+
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+      return { value: element.value };
+    }
+
+    if (element.isContentEditable) {
+      return { text: element.textContent || "" };
+    }
+
+    return {};
+  }
+
+  function setElementValue(element, detail) {
+    if (element instanceof HTMLInputElement) {
+      if (element.type === "checkbox" || element.type === "radio") {
+        element.checked = Boolean(detail.checked);
+      } else {
+        element.value = detail.value ?? "";
+      }
+      return;
+    }
+
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+      element.value = detail.value ?? "";
+      return;
+    }
+
+    if (element.isContentEditable) {
+      element.textContent = detail.text ?? "";
+    }
+  }
+
+  function getStableSelector(element) {
+    if (!element || element === document) return "";
+    if (element === window) return "__window__";
+    if (element === document.documentElement) return "html";
+    if (element === document.body) return "body";
+
+    if (element.id) {
+      const selector = `#${cssEscape(element.id)}`;
+      if (document.querySelectorAll(selector).length === 1) return selector;
+    }
+
+    for (const attr of ["data-testid", "data-test", "data-cy", "name"]) {
+      const value = element.getAttribute(attr);
+      if (!value) continue;
+
+      const selector = `${element.tagName.toLowerCase()}[${attr}="${cssStringEscape(value)}"]`;
+      if (document.querySelectorAll(selector).length === 1) return selector;
+    }
+
+    const parts = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+      const tag = current.tagName.toLowerCase();
+      const siblings = Array.from(current.parentElement?.children || []).filter(
+        (node) => node.tagName === current.tagName,
+      );
+      const index = siblings.indexOf(current) + 1;
+      parts.unshift(`${tag}:nth-of-type(${index})`);
+      current = current.parentElement;
+    }
+
+    return parts.length ? `body > ${parts.join(" > ")}` : "body";
+  }
+
+  function findTarget(selector) {
+    if (!selector || selector === "__window__") return window;
+
+    try {
+      return document.querySelector(selector);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function normalizeScrollTarget(target) {
+    if (
+      target === document ||
+      target === document.body ||
+      target === document.documentElement ||
+      target === window
+    ) {
+      return window;
+    }
+
+    return target;
+  }
+
+  function getScrollSnapshot(target) {
+    const normalized = normalizeScrollTarget(target);
+
+    if (normalized === window) {
+      return {
+        selector: "__window__",
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+      };
+    }
+
+    return {
+      selector: getStableSelector(normalized),
+      scrollLeft: normalized.scrollLeft,
+      scrollTop: normalized.scrollTop,
+    };
+  }
+
+  function nowMs() {
+    return Math.max(0, Math.round(performance.now() - state.startAt));
+  }
+
+  function showClickPulseAt(clientX, clientY) {
+    const pulse = document.createElement("span");
+    pulse.className = "flow-click-pulse";
+    pulse.setAttribute(CONTROL_ATTR, "true");
+    pulse.style.left = `${Math.round(clientX)}px`;
+    pulse.style.top = `${Math.round(clientY)}px`;
+
+    document.body.append(pulse);
+
+    window.setTimeout(() => {
+      pulse.remove();
+    }, CLICK_PULSE_MS);
+  }
+
+  function showClickPulse(event) {
+    showClickPulseAt(event.clientX, event.clientY);
+  }
+
+  function createScrollIndicator() {
+    const indicator = document.createElement("div");
+    indicator.className = "flow-scroll-indicator";
+    indicator.setAttribute(CONTROL_ATTR, "true");
+    indicator.setAttribute("aria-live", "polite");
+
+    const icon = document.createElement("span");
+    icon.className = "flow-scroll-icon";
+    icon.setAttribute("aria-hidden", "true");
+
+    const text = document.createElement("span");
+    text.textContent = "스크롤중";
+
+    indicator.append(icon, text);
+    document.body.append(indicator);
+    state.scrollIndicator = indicator;
+
+    return indicator;
+  }
+
+  function showScrollIndicator() {
+    const indicator = state.scrollIndicator || createScrollIndicator();
+    indicator.classList.add("is-visible");
+
+    window.clearTimeout(state.scrollIndicatorTimer);
+    state.scrollIndicatorTimer = window.setTimeout(() => {
+      indicator.classList.remove("is-visible");
+    }, SCROLL_INDICATOR_MS);
+  }
+
+  function pushEvent(event) {
+    if (!state.isRecording || state.isReplaying) return;
+
+    state.events.push({
+      at: nowMs(),
+      url: location.href,
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      },
+      ...event,
+    });
+    persist();
+  }
+
+  function handleClick(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (!target || isIgnoredTarget(target)) return;
+
+    if (!state.isReplaying) showClickPulse(event);
+
+    pushEvent({
+      type: "click",
+      selector: getStableSelector(target),
+      pointer: {
+        clientX: Math.round(event.clientX),
+        clientY: Math.round(event.clientY),
+      },
+      button: event.button,
+    });
+  }
+
+  function handleInput(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (!target || isIgnoredTarget(target) || !isFormValueElement(target)) return;
+
+    pushEvent({
+      type: event.type,
+      selector: getStableSelector(target),
+      detail: getElementValue(target),
+    });
+  }
+
+  function flushScrollSnapshot(target) {
+    const snapshot = getScrollSnapshot(target);
+
+    pushEvent({
+      type: "scroll",
+      ...snapshot,
+    });
+  }
+
+  function handleScroll(event) {
+    showScrollIndicator();
+
+    const target = normalizeScrollTarget(event.target);
+    const snapshot = getScrollSnapshot(target);
+    const key = snapshot.selector;
+    const current = performance.now();
+    const last = state.scrollLastAt.get(key) || 0;
+
+    if (current - last >= SCROLL_SAMPLE_MS) {
+      state.scrollLastAt.set(key, current);
+      flushScrollSnapshot(target);
+    }
+
+    clearTimeout(state.scrollTimers.get(key));
+    state.scrollTimers.set(
+      key,
+      window.setTimeout(() => {
+        state.scrollLastAt.set(key, performance.now());
+        flushScrollSnapshot(target);
+      }, SCROLL_SAMPLE_MS),
+    );
+  }
+
+  function patchNetworkTracking() {
+    if (window.__flowTesterNetworkPatched) return;
+    window.__flowTesterNetworkPatched = true;
+
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === "function") {
+      window.fetch = (...args) => {
+        state.pendingRequests += 1;
+        return originalFetch.apply(window, args).finally(() => {
+          state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+          state.lastMutationAt = performance.now();
+        });
+      };
+    }
+
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function patchedSend(...args) {
+      state.pendingRequests += 1;
+      this.addEventListener(
+        "loadend",
+        () => {
+          state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+          state.lastMutationAt = performance.now();
+        },
+        { once: true },
+      );
+      try {
+        return originalSend.apply(this, args);
+      } catch (error) {
+        state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+        throw error;
+      }
+    };
+  }
+
+  function watchDomQuietTime() {
+    const observer = new MutationObserver(() => {
+      state.lastMutationAt = performance.now();
+    });
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+  }
+
+  async function nextFrame() {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+
+  async function waitForIdle(maxWaitMs = 12000) {
+    const start = performance.now();
+
+    while (performance.now() - start < maxWaitMs) {
+      const quietFor = performance.now() - state.lastMutationAt;
+      const documentReady = document.readyState !== "loading";
+
+      if (documentReady && state.pendingRequests === 0 && quietFor >= QUIET_MS) {
+        await nextFrame();
+        return;
+      }
+
+      await sleep(40);
+    }
+  }
+
+  async function waitForTarget(selector, timeoutMs = TARGET_WAIT_MS) {
+    const start = performance.now();
+
+    while (performance.now() - start < timeoutMs) {
+      const target = findTarget(selector);
+      if (target) return target;
+      await sleep(50);
+    }
+
+    return null;
+  }
+
+  function dispatchMouseSequence(target, event) {
+    if (!target || target === window) return;
+
+    const point = event.pointer || {};
+    const options = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      button: event.button || 0,
+      clientX: point.clientX || 0,
+      clientY: point.clientY || 0,
+    };
+
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      target.dispatchEvent(new MouseEvent(type, options));
+    }
+
+    if (typeof target.click === "function") {
+      target.click();
+    } else {
+      target.dispatchEvent(new MouseEvent("click", options));
+    }
+  }
+
+  function dispatchValueEvents(target, event) {
+    setElementValue(target, event.detail || {});
+
+    target.dispatchEvent(
+      new Event(event.type, {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+
+  function playScroll(event) {
+    const target = findTarget(event.selector);
+
+    if (target === window || event.selector === "__window__") {
+      window.scrollTo(event.scrollX || 0, event.scrollY || 0);
+      return;
+    }
+
+    if (!target) return;
+    target.scrollLeft = event.scrollLeft || 0;
+    target.scrollTop = event.scrollTop || 0;
+  }
+
+  async function playEvent(event) {
+    if (event.type === "scroll") {
+      playScroll(event);
+      return;
+    }
+
+    const target = await waitForTarget(event.selector);
+    if (!target) {
+      console.warn("[FlowTester] 재생할 대상을 찾지 못했습니다.", event);
+      return;
+    }
+
+    if (target !== window && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+      await nextFrame();
+    }
+
+    if (event.type === "click") {
+      const rect = target.getBoundingClientRect();
+      const pointer = event.pointer || {};
+      const clientX = pointer.clientX || rect.left + rect.width / 2;
+      const clientY = pointer.clientY || rect.top + rect.height / 2;
+      showClickPulseAt(clientX, clientY);
+      dispatchMouseSequence(target, event);
+      return;
+    }
+
+    if (event.type === "input" || event.type === "change") {
+      dispatchValueEvents(target, event);
+    }
+  }
+
+  function syncControlState() {
+    if (!state.recordButton || !state.replayButton) return;
+
+    state.recordButton.textContent = state.isRecording ? "녹음중" : "녹음";
+    state.recordButton.dataset.state = state.isRecording ? "recording" : "idle";
+    state.recordButton.disabled = state.isReplaying;
+    state.recordButton.setAttribute("aria-pressed", state.isRecording ? "true" : "false");
+
+    state.replayButton.textContent = state.isReplaying ? "재생중" : "재생";
+    state.replayButton.dataset.state = state.isReplaying ? "replaying" : "idle";
+    state.replayButton.disabled = state.isRecording || state.isReplaying || !state.events.length;
+    state.replayButton.setAttribute("aria-pressed", state.isReplaying ? "true" : "false");
+  }
+
+  function createControl() {
+    const wrap = document.createElement("div");
+    wrap.className = CONTROL_CLASS;
+    wrap.setAttribute(CONTROL_ATTR, "true");
+
+    const recordButton = document.createElement("button");
+    recordButton.type = "button";
+    recordButton.textContent = "녹음";
+    recordButton.dataset.action = "record";
+    recordButton.dataset.state = "idle";
+    recordButton.setAttribute("aria-pressed", "false");
+
+    const replayButton = document.createElement("button");
+    replayButton.type = "button";
+    replayButton.textContent = "재생";
+    replayButton.dataset.action = "replay";
+    replayButton.dataset.state = "idle";
+    replayButton.setAttribute("aria-pressed", "false");
+
+    recordButton.addEventListener("click", () => {
+      if (state.isReplaying) return;
+
+      if (state.isRecording) {
+        stopRecording();
+        return;
+      }
+
+      startRecording({ append: false });
+    });
+
+    replayButton.addEventListener("click", () => {
+      if (state.isRecording || state.isReplaying || !state.events.length) return;
+      replay();
+    });
+
+    wrap.append(recordButton, replayButton);
+    document.body.append(wrap);
+    state.recordButton = recordButton;
+    state.replayButton = replayButton;
+    syncControlState();
+  }
+
+  function startRecording({ append }) {
+    state.replayAbort = true;
+    state.isReplaying = false;
+    state.isRecording = true;
+    state.events = append ? state.events : [];
+    const lastEvent = state.events.length ? state.events[state.events.length - 1] : null;
+    const lastAt = lastEvent?.at || 0;
+    state.startAt = performance.now() - lastAt;
+    state.meta = {
+      isRecording: true,
+      startedAt: append ? state.meta.startedAt || Date.now() : Date.now(),
+      startUrl: location.href,
+      version: 1,
+    };
+    syncControlState();
+    persist();
+  }
+
+  function stopRecording() {
+    state.isRecording = false;
+    state.meta = {
+      ...state.meta,
+      isRecording: false,
+      stoppedAt: Date.now(),
+    };
+    syncControlState();
+    persist();
+  }
+
+  async function replay({ resumeRecording = false } = {}) {
+    if (!state.events.length || state.isReplaying) return;
+
+    state.replayAbort = false;
+    state.isRecording = false;
+    state.isReplaying = true;
+    syncControlState();
+
+    await waitForIdle();
+    const replayStart = performance.now();
+    const sortedEvents = [...state.events].sort((a, b) => a.at - b.at);
+
+    for (const event of sortedEvents) {
+      if (state.replayAbort) break;
+
+      const scheduledAt = replayStart + event.at;
+      const waitMs = scheduledAt - performance.now();
+      if (waitMs > 0) await sleep(waitMs);
+
+      await waitForIdle();
+      await playEvent(event);
+      await waitForIdle();
+    }
+
+    state.isReplaying = false;
+
+    if (state.isRecording) return;
+
+    if (resumeRecording && !state.replayAbort) {
+      startRecording({ append: true });
+      return;
+    }
+
+    syncControlState();
+  }
+
+  function attachListeners() {
+    document.addEventListener("click", handleClick, true);
+    document.addEventListener("input", handleInput, true);
+    document.addEventListener("change", handleInput, true);
+    document.addEventListener("scroll", handleScroll, true);
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") persist();
+    });
+    window.addEventListener("beforeunload", persist);
+    window.addEventListener("pagehide", persist);
+  }
+
+  function boot() {
+    state.events = readJson(STORAGE_KEY, []);
+
+    patchNetworkTracking();
+    watchDomQuietTime();
+    createControl();
+    attachListeners();
+
+    const wasRecording = Boolean(state.meta.isRecording);
+    if (!state.events.length) {
+      syncControlState();
+      return;
+    }
+
+    window.setTimeout(() => {
+      replay({ resumeRecording: wasRecording });
+    }, REPLAY_BOOT_DELAY_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot, { once: true });
+  } else {
+    boot();
+  }
+
+  window.UserFlowTester = Object.freeze({
+    start: () => startRecording({ append: false }),
+    stop: stopRecording,
+    replay: () => replay(),
+    clear: () => {
+      state.events = [];
+      state.meta = {};
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(META_KEY);
+      syncControlState();
+    },
+    getEvents: () => [...state.events],
+  });
+})();

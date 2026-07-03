@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>사용자 플로우 테스터</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">Flow Tester</div>
+        <nav class="menu" aria-label="샘플 메뉴">
+          <a class="menu-item is-active" href="#dashboard">대시보드</a>
+          <a class="menu-item" href="#requests">요청 내역</a>
+          <a class="menu-item" href="#settings">설정</a>
+        </nav>
+      </aside>
+
+      <section class="workspace" id="dashboard">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Sandbox</p>
+            <h1>사용자 플로우 재생 테스트</h1>
+          </div>
+          <label class="search-field">
+            <span>검색</span>
+            <input id="query" type="search" placeholder="고객명 또는 요청번호" autocomplete="off" />
+          </label>
+        </header>
+
+        <section class="content-grid" aria-label="샘플 업무 화면">
+          <form class="panel" id="request-form">
+            <div class="panel-head">
+              <h2>요청 생성</h2>
+              <span class="status-chip">Draft</span>
+            </div>
+
+            <label>
+              이름
+              <input id="customer-name" name="customerName" type="text" placeholder="홍길동" />
+            </label>
+
+            <label>
+              유형
+              <select id="request-type" name="requestType">
+                <option value="refund">환불</option>
+                <option value="delivery">배송</option>
+                <option value="account">계정</option>
+              </select>
+            </label>
+
+            <label>
+              메모
+              <textarea id="memo" name="memo" rows="5" placeholder="상황을 입력하세요"></textarea>
+            </label>
+
+            <label class="check-row">
+              <input id="urgent" name="urgent" type="checkbox" />
+              긴급 처리
+            </label>
+          </form>
+
+          <section class="panel request-list" id="requests">
+            <div class="panel-head">
+              <h2>처리 대기</h2>
+              <span class="status-chip alt">Live</span>
+            </div>
+            <div class="request-row" tabindex="0" data-request-id="A-1042">
+              <strong>A-1042</strong>
+              <span>결제 승인 확인</span>
+              <em>12분 전</em>
+            </div>
+            <div class="request-row" tabindex="0" data-request-id="A-1043">
+              <strong>A-1043</strong>
+              <span>주소 변경 요청</span>
+              <em>25분 전</em>
+            </div>
+            <div class="request-row" tabindex="0" data-request-id="A-1044">
+              <strong>A-1044</strong>
+              <span>멤버십 등급 문의</span>
+              <em>48분 전</em>
+            </div>
+            <div class="request-row" tabindex="0" data-request-id="A-1045">
+              <strong>A-1045</strong>
+              <span>세금계산서 재발행</span>
+              <em>1시간 전</em>
+            </div>
+          </section>
+
+          <section class="panel activity-panel">
+            <div class="panel-head">
+              <h2>상태</h2>
+              <span class="status-chip warm">Ready</span>
+            </div>
+            <output id="selected-request">선택된 요청 없음</output>
+            <div class="progress-track" aria-hidden="true">
+              <span style="width: 64%"></span>
+            </div>
+            <p class="body-copy">
+              오늘 처리 목표 대비 진행률이 안정권에 있습니다. 긴급 항목은 우선순위를
+              조정해 배정하세요.
+            </p>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./recorder.js"></script>
+    <script>
+      (() => {
+        const rows = document.querySelectorAll(".request-row");
+        const selected = document.querySelector("#selected-request");
+
+        rows.forEach((row) => {
+          row.addEventListener("click", () => {
+            rows.forEach((item) => item.classList.remove("is-selected"));
+            row.classList.add("is-selected");
+            selected.value = `${row.dataset.requestId} 선택됨`;
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>
