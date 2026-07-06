@@ -14,30 +14,31 @@
   const CONTROL_CSS = `
     .flow-recorder {
       position: fixed;
-      top: 10px;
-      right: 10px;
+      top: 50px;
+      right: auto;
       bottom: auto;
+      left: 10px;
       z-index: 2147483000;
       display: inline-flex;
-      gap: 6px;
+      gap: 4px;
       align-items: center;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
     .flow-recorder button {
-      min-width: 44px;
-      min-height: 28px;
-      height: 28px;
+      min-width: 38px;
+      min-height: 24px;
+      height: 24px;
       border: 0;
-      border-radius: 6px;
+      border-radius: 5px;
       background: #1c2430;
       color: #ffffff;
-      padding: 0 9px;
+      padding: 0 7px;
       box-shadow: 0 8px 18px rgba(28, 36, 48, 0.18);
       cursor: pointer;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 800;
-      line-height: 28px;
+      line-height: 24px;
     }
 
     .flow-recorder button[data-action="replay"] {
@@ -90,9 +91,10 @@
 
     .flow-scroll-indicator {
       position: fixed;
-      top: 46px;
-      right: 10px;
+      top: 80px;
+      right: auto;
       bottom: auto;
+      left: 10px;
       z-index: 2147482999;
       display: inline-flex;
       align-items: center;
