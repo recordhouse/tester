@@ -5,11 +5,169 @@
   const META_KEY = "user-flow-tester:meta:v1";
   const CONTROL_ATTR = "data-recorder-ignore";
   const CONTROL_CLASS = "flow-recorder";
+  const STYLE_ID = "flow-recorder-style";
   const SCROLL_SAMPLE_MS = 80;
   const CLICK_PULSE_MS = 520;
   const SCROLL_INDICATOR_MS = 760;
   const QUIET_MS = 140;
   const TARGET_WAIT_MS = 7000;
+  const CONTROL_CSS = `
+    .flow-recorder {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      bottom: auto;
+      z-index: 2147483000;
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .flow-recorder button {
+      min-width: 44px;
+      min-height: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 6px;
+      background: #1c2430;
+      color: #ffffff;
+      padding: 0 9px;
+      box-shadow: 0 8px 18px rgba(28, 36, 48, 0.18);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 28px;
+    }
+
+    .flow-recorder button[data-action="replay"] {
+      background: #0f766e;
+    }
+
+    .flow-recorder button:hover,
+    .flow-recorder button:focus-visible {
+      background: #0f766e;
+      outline: none;
+    }
+
+    .flow-recorder button[data-action="replay"]:hover,
+    .flow-recorder button[data-action="replay"]:focus-visible {
+      background: #0d5f59;
+    }
+
+    .flow-recorder button[data-state="recording"] {
+      background: #b42345;
+    }
+
+    .flow-recorder button[data-state="replaying"] {
+      background: #9a6400;
+    }
+
+    .flow-recorder button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .flow-click-pulse {
+      position: fixed;
+      z-index: 2147482999;
+      width: 18px;
+      height: 18px;
+      border: 2px solid #b42345;
+      border-radius: 999px;
+      pointer-events: none;
+      transform: translate(-50%, -50%) scale(0.7);
+      animation: flow-click-pulse 520ms ease-out forwards;
+    }
+
+    .flow-click-pulse::after {
+      position: absolute;
+      inset: 4px;
+      border-radius: inherit;
+      background: rgba(180, 35, 69, 0.22);
+      content: "";
+    }
+
+    .flow-scroll-indicator {
+      position: fixed;
+      top: 46px;
+      right: 10px;
+      bottom: auto;
+      z-index: 2147482999;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      border-radius: 6px;
+      background: rgba(28, 36, 48, 0.94);
+      color: #ffffff;
+      padding: 5px 9px;
+      box-shadow: 0 8px 18px rgba(28, 36, 48, 0.18);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-6px);
+      transition:
+        opacity 160ms ease,
+        transform 160ms ease;
+    }
+
+    .flow-scroll-indicator.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .flow-scroll-icon {
+      position: relative;
+      width: 13px;
+      height: 19px;
+      border: 2px solid currentColor;
+      border-radius: 999px;
+    }
+
+    .flow-scroll-icon::before {
+      position: absolute;
+      top: 4px;
+      left: 50%;
+      width: 3px;
+      height: 5px;
+      border-radius: 999px;
+      background: currentColor;
+      content: "";
+      transform: translateX(-50%);
+      animation: flow-scroll-wheel 760ms ease-in-out infinite;
+    }
+
+    @keyframes flow-click-pulse {
+      0% {
+        opacity: 0.95;
+        transform: translate(-50%, -50%) scale(0.7);
+      }
+
+      100% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(2.6);
+      }
+    }
+
+    @keyframes flow-scroll-wheel {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, 0);
+      }
+
+      35% {
+        opacity: 1;
+      }
+
+      100% {
+        opacity: 0;
+        transform: translate(-50%, 7px);
+      }
+    }
+  `;
 
   const state = {
     events: [],
@@ -246,6 +404,20 @@
     state.scrollIndicatorTimer = window.setTimeout(() => {
       indicator.classList.remove("is-visible");
     }, SCROLL_INDICATOR_MS);
+  }
+
+  function ensureControlStyles() {
+    const existing = document.getElementById(STYLE_ID);
+    if (existing) {
+      existing.textContent = CONTROL_CSS;
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.setAttribute(CONTROL_ATTR, "true");
+    style.textContent = CONTROL_CSS;
+    (document.head || document.body).append(style);
   }
 
   function pushEvent(event) {
@@ -643,6 +815,7 @@
 
     patchNetworkTracking();
     watchDomQuietTime();
+    ensureControlStyles();
     createControl();
     attachListeners();
 
