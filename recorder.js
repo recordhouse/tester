@@ -55,6 +55,10 @@
       line-height: 24px;
     }
 
+    .flow-recorder button[data-action="record"] {
+      background: #b42345;
+    }
+
     .flow-recorder button[data-action="replay"] {
       background: #0f766e;
     }
@@ -70,7 +74,7 @@
       background: #0d5f59;
     }
 
-    .flow-recorder button[data-state="recording"] {
+    .flow-recorder button[data-action="record"][data-state="recording"] {
       background: #b42345;
     }
 
@@ -888,8 +892,12 @@
     attachListeners();
 
     if (state.meta.isRecording) {
-      startRecording({ append: true });
-      return;
+      state.meta = {
+        ...state.meta,
+        isRecording: false,
+        stoppedAt: state.meta.updatedAt || Date.now(),
+      };
+      flushPersist();
     }
 
     syncControlState();
