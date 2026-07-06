@@ -6,11 +6,25 @@
   const CONTROL_ATTR = "data-recorder-ignore";
   const CONTROL_CLASS = "flow-recorder";
   const STYLE_ID = "flow-recorder-style";
-  const SCROLL_SAMPLE_MS = 80;
+  const SCROLL_SAMPLE_MS = 32;
   const CLICK_PULSE_MS = 520;
   const SCROLL_INDICATOR_MS = 760;
+  const USER_SCROLL_SIGNAL_MS = 900;
+  const PERSIST_DEBOUNCE_MS = 120;
   const QUIET_MS = 140;
   const TARGET_WAIT_MS = 7000;
+  const SCROLL_KEYS = new Set([
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "End",
+    "Home",
+    "PageDown",
+    "PageUp",
+    " ",
+    "Spacebar",
+  ]);
   const CONTROL_CSS = `
     .flow-recorder {
       position: fixed;
@@ -31,7 +45,7 @@
       height: 24px;
       border: 0;
       border-radius: 5px;
-      background: #1c2430;
+      background: #b42345;
       color: #ffffff;
       padding: 0 7px;
       box-shadow: 0 8px 18px rgba(28, 36, 48, 0.18);
@@ -47,7 +61,7 @@
 
     .flow-recorder button:hover,
     .flow-recorder button:focus-visible {
-      background: #0f766e;
+      background: #982039;
       outline: none;
     }
 
@@ -60,8 +74,8 @@
       background: #b42345;
     }
 
-    .flow-recorder button[data-state="replaying"] {
-      background: #9a6400;
+    .flow-recorder button[data-action="replay"][data-state="replaying"] {
+      background: #0d5f59;
     }
 
     .flow-recorder button:disabled {
@@ -181,6 +195,8 @@
     scrollLastAt: new Map(),
     scrollTimers: new Map(),
     replayAbort: false,
+    lastUserScrollInputAt: 0,
+    persistTimer: 0,
     recordButton: null,
     replayButton: null,
     scrollIndicator: null,
@@ -213,6 +229,21 @@
       updatedAt: Date.now(),
       version: 1,
     });
+  }
+
+  function schedulePersist() {
+    if (state.persistTimer) return;
+
+    state.persistTimer = window.setTimeout(() => {
+      state.persistTimer = 0;
+      persist();
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  function flushPersist() {
+    window.clearTimeout(state.persistTimer);
+    state.persistTimer = 0;
+    persist();
   }
 
   function cssEscape(value) {
@@ -422,7 +453,25 @@
     (document.head || document.body).append(style);
   }
 
-  function pushEvent(event) {
+  function markUserScrollIntent(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (target && isIgnoredTarget(target)) return;
+    state.lastUserScrollInputAt = performance.now();
+  }
+
+  function handleScrollKeydown(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+
+    if (!SCROLL_KEYS.has(event.key)) return;
+    if (target && (isIgnoredTarget(target) || isFormValueElement(target))) return;
+    state.lastUserScrollInputAt = performance.now();
+  }
+
+  function isRecentUserScroll() {
+    return performance.now() - state.lastUserScrollInputAt <= USER_SCROLL_SIGNAL_MS;
+  }
+
+  function pushEvent(event, { deferPersist = false } = {}) {
     if (!state.isRecording || state.isReplaying) return;
 
     state.events.push({
@@ -434,7 +483,13 @@
       },
       ...event,
     });
-    persist();
+
+    if (deferPersist) {
+      schedulePersist();
+      return;
+    }
+
+    flushPersist();
   }
 
   function handleClick(event) {
@@ -471,10 +526,12 @@
     pushEvent({
       type: "scroll",
       ...snapshot,
-    });
+    }, { deferPersist: true });
   }
 
   function handleScroll(event) {
+    if (state.isReplaying || !isRecentUserScroll()) return;
+
     showScrollIndicator();
 
     const target = normalizeScrollTarget(event.target);
@@ -740,7 +797,7 @@
       version: 1,
     };
     syncControlState();
-    persist();
+    flushPersist();
   }
 
   function stopRecording() {
@@ -751,7 +808,7 @@
       stoppedAt: Date.now(),
     };
     syncControlState();
-    persist();
+    flushPersist();
   }
 
   function stopReplay() {
@@ -780,11 +837,17 @@
       if (waitMs > 0) await sleep(waitMs);
       if (state.replayAbort) break;
 
-      await waitForIdle();
-      if (state.replayAbort) break;
+      if (event.type !== "scroll") {
+        await waitForIdle();
+        if (state.replayAbort) break;
+      }
+
       await playEvent(event);
       if (state.replayAbort) break;
-      await waitForIdle();
+
+      if (event.type !== "scroll") {
+        await waitForIdle();
+      }
     }
 
     state.isReplaying = false;
@@ -800,16 +863,19 @@
   }
 
   function attachListeners() {
+    document.addEventListener("wheel", markUserScrollIntent, { capture: true, passive: true });
+    document.addEventListener("touchmove", markUserScrollIntent, { capture: true, passive: true });
+    document.addEventListener("keydown", handleScrollKeydown, true);
     document.addEventListener("click", handleClick, true);
     document.addEventListener("input", handleInput, true);
     document.addEventListener("change", handleInput, true);
     document.addEventListener("scroll", handleScroll, true);
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") persist();
+      if (document.visibilityState === "hidden") flushPersist();
     });
-    window.addEventListener("beforeunload", persist);
-    window.addEventListener("pagehide", persist);
+    window.addEventListener("beforeunload", flushPersist);
+    window.addEventListener("pagehide", flushPersist);
   }
 
   function boot() {
@@ -841,6 +907,8 @@
     stopReplay,
     replay: () => replay(),
     clear: () => {
+      window.clearTimeout(state.persistTimer);
+      state.persistTimer = 0;
       state.events = [];
       state.meta = {};
       localStorage.removeItem(STORAGE_KEY);
