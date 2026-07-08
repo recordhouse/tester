@@ -295,18 +295,30 @@
     return {};
   }
 
+  function setNativeProperty(element, property, value) {
+    const prototype = Object.getPrototypeOf(element);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
+
+    if (descriptor?.set) {
+      descriptor.set.call(element, value);
+      return;
+    }
+
+    element[property] = value;
+  }
+
   function setElementValue(element, detail) {
     if (element instanceof HTMLInputElement) {
       if (element.type === "checkbox" || element.type === "radio") {
-        element.checked = Boolean(detail.checked);
+        setNativeProperty(element, "checked", Boolean(detail.checked));
       } else {
-        element.value = detail.value ?? "";
+        setNativeProperty(element, "value", detail.value ?? "");
       }
       return;
     }
 
     if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-      element.value = detail.value ?? "";
+      setNativeProperty(element, "value", detail.value ?? "");
       return;
     }
 
@@ -348,6 +360,31 @@
     }
 
     return parts.length ? `body > ${parts.join(" > ")}` : "body";
+  }
+
+  function getElementLabelText(element) {
+    const id = element.id ? cssStringEscape(element.id) : "";
+    const explicitLabel = id ? document.querySelector(`label[for="${id}"]`) : null;
+    const wrappingLabel = element.closest ? element.closest("label") : null;
+    const label = explicitLabel || wrappingLabel;
+
+    return label?.textContent?.trim().replace(/\s+/g, " ").slice(0, 120) || "";
+  }
+
+  function getElementHint(element) {
+    return {
+      tag: element.tagName?.toLowerCase() || "",
+      id: element.id || "",
+      name: element.getAttribute("name") || "",
+      type: element.getAttribute("type") || "",
+      role: element.getAttribute("role") || "",
+      placeholder: element.getAttribute("placeholder") || "",
+      ariaLabel: element.getAttribute("aria-label") || "",
+      title: element.getAttribute("title") || "",
+      autocomplete: element.getAttribute("autocomplete") || "",
+      labelText: getElementLabelText(element),
+      contentEditable: element.isContentEditable,
+    };
   }
 
   function findTarget(selector) {
@@ -520,6 +557,7 @@
     pushEvent({
       type: event.type,
       selector: getStableSelector(target),
+      element: getElementHint(target),
       detail: getElementValue(target),
     });
   }
@@ -631,11 +669,110 @@
     }
   }
 
-  async function waitForTarget(selector, timeoutMs = TARGET_WAIT_MS) {
+  function isVisibleElement(element) {
+    if (!element || !(element instanceof Element)) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+
+    return (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  }
+
+  function scoreInputCandidate(candidate, hint = {}) {
+    if (!candidate || !hint) return 0;
+
+    const tag = candidate.tagName?.toLowerCase() || "";
+    let score = 0;
+
+    if (hint.tag) {
+      if (tag !== hint.tag) return -1;
+      score += 1;
+    }
+
+    if (hint.type && candidate.getAttribute("type") !== hint.type) return -1;
+
+    const checks = [
+      ["id", candidate.id, 8],
+      ["name", candidate.getAttribute("name"), 7],
+      ["placeholder", candidate.getAttribute("placeholder"), 5],
+      ["ariaLabel", candidate.getAttribute("aria-label"), 5],
+      ["role", candidate.getAttribute("role"), 3],
+      ["title", candidate.getAttribute("title"), 3],
+      ["autocomplete", candidate.getAttribute("autocomplete"), 2],
+      ["labelText", getElementLabelText(candidate), 4],
+    ];
+
+    for (const [key, value, weight] of checks) {
+      if (hint[key] && value === hint[key]) score += weight;
+    }
+
+    return score;
+  }
+
+  function getActiveInputTarget() {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) return null;
+    if (!isFormValueElement(active) || isIgnoredTarget(active) || !isVisibleElement(active)) return null;
+
+    return active;
+  }
+
+  function findInputFallbackTarget(event) {
+    if (event?.type !== "input" && event?.type !== "change") return null;
+
+    const active = getActiveInputTarget();
+    if (active && scoreInputCandidate(active, event.element || {}) >= 0) return active;
+
+    const hint = event.element || {};
+    const candidates = Array.from(
+      document.querySelectorAll(
+        'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]',
+      ),
+    ).filter((candidate) => (
+      isFormValueElement(candidate) &&
+      !isIgnoredTarget(candidate) &&
+      isVisibleElement(candidate)
+    ));
+
+    let best = null;
+    let bestScore = -1;
+
+    for (const candidate of candidates) {
+      const score = scoreInputCandidate(candidate, hint);
+      if (score >= bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+
+    return bestScore > 0 ? best : null;
+  }
+
+  function getReplayTarget(selector, event) {
+    const target = findTarget(selector);
+
+    if (event?.type !== "input" && event?.type !== "change") return target;
+
+    const fallback = findInputFallbackTarget(event);
+    if (!target || !isFormValueElement(target)) return fallback || target;
+
+    if (!fallback || fallback === target) return target;
+
+    const targetScore = scoreInputCandidate(target, event.element || {});
+    const fallbackScore = scoreInputCandidate(fallback, event.element || {});
+
+    return fallbackScore > targetScore + 1 ? fallback : target;
+  }
+
+  async function waitForTarget(selector, timeoutMs = TARGET_WAIT_MS, event = null) {
     const start = performance.now();
 
     while (performance.now() - start < timeoutMs) {
-      const target = findTarget(selector);
+      const target = getReplayTarget(selector, event);
       if (target) return target;
       await sleep(50);
     }
@@ -668,6 +805,14 @@
   }
 
   function dispatchValueEvents(target, event) {
+    if (typeof target.focus === "function") {
+      try {
+        target.focus({ preventScroll: true });
+      } catch (_error) {
+        target.focus();
+      }
+    }
+
     setElementValue(target, event.detail || {});
 
     target.dispatchEvent(
@@ -697,7 +842,7 @@
       return;
     }
 
-    const target = await waitForTarget(event.selector);
+    const target = await waitForTarget(event.selector, TARGET_WAIT_MS, event);
     if (!target) {
       console.warn("[FlowTester] 재생할 대상을 찾지 못했습니다.", event);
       return;
