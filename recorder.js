@@ -8,6 +8,7 @@
   const STYLE_ID = "flow-recorder-style";
   const CONTROL_WINDOW_NAME = "FlowRecorderControls";
   const CONTROL_WINDOW_FEATURES = "popup=yes,width=124,height=44,left=80,top=80,resizable=no,scrollbars=no";
+  const AUTO_START_RECORDING = true;
   const SCROLL_SAMPLE_MS = 32;
   const CLICK_PULSE_MS = 520;
   const SCROLL_INDICATOR_MS = 760;
@@ -1130,6 +1131,11 @@
         stoppedAt: state.meta.updatedAt || Date.now(),
       };
       flushPersist();
+    }
+
+    if (AUTO_START_RECORDING) {
+      startRecording({ append: false });
+      return;
     }
 
     syncControlState();
