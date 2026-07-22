@@ -6,6 +6,8 @@
   const CONTROL_ATTR = "data-recorder-ignore";
   const CONTROL_CLASS = "flow-recorder";
   const STYLE_ID = "flow-recorder-style";
+  const CONTROL_WINDOW_NAME = "FlowRecorderControls";
+  const CONTROL_WINDOW_FEATURES = "popup=yes,width=124,height=44,left=80,top=80,resizable=no,scrollbars=no";
   const SCROLL_SAMPLE_MS = 32;
   const CLICK_PULSE_MS = 520;
   const SCROLL_INDICATOR_MS = 760;
@@ -188,6 +190,42 @@
       }
     }
   `;
+  const POPUP_CONTROL_CSS = `
+    ${CONTROL_CSS}
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #111827;
+    }
+
+    .flow-recorder {
+      position: static;
+      display: flex;
+      gap: 4px;
+      width: max-content;
+      margin: 6px;
+      padding: 0;
+    }
+
+    .flow-recorder button {
+      min-width: 42px;
+      height: 24px;
+      min-height: 24px;
+      padding: 0 6px;
+      box-shadow: none;
+      font-size: 11px;
+      line-height: 24px;
+      white-space: nowrap;
+    }
+
+    .flow-recorder button[data-action="record"] {
+      min-width: 54px;
+    }
+  `;
 
   const state = {
     events: [],
@@ -201,6 +239,7 @@
     replayAbort: false,
     lastUserScrollInputAt: 0,
     persistTimer: 0,
+    controlWindow: null,
     recordButton: null,
     replayButton: null,
     scrollIndicator: null,
@@ -869,6 +908,13 @@
   }
 
   function syncControlState() {
+    if (state.controlWindow?.closed) {
+      state.controlWindow = null;
+      state.recordButton = null;
+      state.replayButton = null;
+      return;
+    }
+
     if (!state.recordButton || !state.replayButton) return;
 
     state.recordButton.textContent = state.isRecording ? "녹음중" : "녹음";
@@ -882,19 +928,19 @@
     state.replayButton.setAttribute("aria-pressed", state.isReplaying ? "true" : "false");
   }
 
-  function createControl() {
-    const wrap = document.createElement("div");
+  function createControlElements(ownerDocument) {
+    const wrap = ownerDocument.createElement("div");
     wrap.className = CONTROL_CLASS;
     wrap.setAttribute(CONTROL_ATTR, "true");
 
-    const recordButton = document.createElement("button");
+    const recordButton = ownerDocument.createElement("button");
     recordButton.type = "button";
     recordButton.textContent = "녹음";
     recordButton.dataset.action = "record";
     recordButton.dataset.state = "idle";
     recordButton.setAttribute("aria-pressed", "false");
 
-    const replayButton = document.createElement("button");
+    const replayButton = ownerDocument.createElement("button");
     replayButton.type = "button";
     replayButton.textContent = "재생";
     replayButton.dataset.action = "replay";
@@ -925,7 +971,48 @@
     });
 
     wrap.append(recordButton, replayButton);
-    document.body.append(wrap);
+
+    return { wrap, recordButton, replayButton };
+  }
+
+  function openControlWindow() {
+    try {
+      const popup = window.open("", CONTROL_WINDOW_NAME, CONTROL_WINDOW_FEATURES);
+      if (!popup || popup.closed) return null;
+
+      popup.document.open();
+      popup.document.write(`<!doctype html>
+        <html lang="ko">
+          <head>
+            <meta charset="utf-8" />
+            <title>Flow Controls</title>
+            <style>${POPUP_CONTROL_CSS}</style>
+          </head>
+          <body></body>
+        </html>`);
+      popup.document.close();
+      popup.addEventListener("beforeunload", () => {
+        if (state.controlWindow === popup) {
+          state.controlWindow = null;
+          state.recordButton = null;
+          state.replayButton = null;
+        }
+      });
+      state.controlWindow = popup;
+
+      return popup;
+    } catch (error) {
+      console.warn("[FlowTester] 컨트롤 팝업을 열 수 없어 페이지 안에 버튼을 표시합니다.", error);
+      return null;
+    }
+  }
+
+  function createControl() {
+    const popup = openControlWindow();
+    const ownerDocument = popup?.document || document;
+    const { wrap, recordButton, replayButton } = createControlElements(ownerDocument);
+
+    ownerDocument.body.append(wrap);
     state.recordButton = recordButton;
     state.replayButton = replayButton;
     syncControlState();
