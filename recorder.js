@@ -9,7 +9,7 @@
   const STYLE_ID = "flow-recorder-style";
   const CONTROL_WINDOW_NAME = "FlowRecorderSessions";
   const CONTROL_WINDOW_FEATURES = "popup=yes,width=190,height=240,left=80,top=80,resizable=yes,scrollbars=yes";
-  const AUTO_START_RECORDING = true;
+  const AUTO_START_RECORDING = false;
   const MAX_SESSIONS = 20;
   const SCROLL_SAMPLE_MS = 32;
   const CLICK_PULSE_MS = 520;
@@ -1217,7 +1217,6 @@
     watchDomQuietTime();
     ensureControlStyles();
     createControl();
-    openControlWindow();
     attachListeners();
 
     if (state.meta.isRecording) {
