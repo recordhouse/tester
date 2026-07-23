@@ -33,7 +33,7 @@
   const CONTROL_CSS = `
     .flow-recorder {
       position: fixed;
-      top: 50px;
+      top: 20px;
       right: auto;
       bottom: auto;
       left: 50%;
