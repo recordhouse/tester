@@ -2,13 +2,15 @@
   "use strict";
 
   const STORAGE_KEY = "user-flow-tester:events:v1";
+  const SESSIONS_KEY = "user-flow-tester:sessions:v1";
   const META_KEY = "user-flow-tester:meta:v1";
   const CONTROL_ATTR = "data-recorder-ignore";
   const CONTROL_CLASS = "flow-recorder";
   const STYLE_ID = "flow-recorder-style";
-  const CONTROL_WINDOW_NAME = "FlowRecorderControls";
-  const CONTROL_WINDOW_FEATURES = "popup=yes,width=124,height=44,left=80,top=80,resizable=no,scrollbars=no";
+  const CONTROL_WINDOW_NAME = "FlowRecorderSessions";
+  const CONTROL_WINDOW_FEATURES = "popup=yes,width=190,height=240,left=80,top=80,resizable=yes,scrollbars=yes";
   const AUTO_START_RECORDING = true;
+  const MAX_SESSIONS = 20;
   const SCROLL_SAMPLE_MS = 32;
   const CLICK_PULSE_MS = 520;
   const SCROLL_INDICATOR_MS = 760;
@@ -34,11 +36,12 @@
       top: 50px;
       right: auto;
       bottom: auto;
-      left: 10px;
+      left: 50%;
       z-index: 2147483000;
       display: inline-flex;
       gap: 4px;
       align-items: center;
+      transform: translateX(-50%);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
@@ -199,37 +202,46 @@
       width: 100%;
       height: 100%;
       margin: 0;
-      overflow: hidden;
+      overflow: auto;
       background: #111827;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    .flow-recorder {
-      position: static;
-      display: flex;
-      gap: 4px;
-      width: max-content;
-      margin: 6px;
-      padding: 0;
+    .flow-session-list {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
     }
 
-    .flow-recorder button {
-      min-width: 42px;
+    .flow-session-button {
+      width: 100%;
       height: 24px;
       min-height: 24px;
+      border: 0;
+      border-radius: 5px;
+      background: #1f2937;
+      color: #ffffff;
       padding: 0 6px;
       box-shadow: none;
       font-size: 11px;
+      font-weight: 800;
       line-height: 24px;
       white-space: nowrap;
+      cursor: pointer;
     }
 
-    .flow-recorder button[data-action="record"] {
-      min-width: 54px;
+    .flow-session-button:hover,
+    .flow-session-button:focus-visible {
+      background: #0f766e;
+      outline: none;
     }
   `;
 
   const state = {
     events: [],
+    sessions: readJson(SESSIONS_KEY, []),
+    currentSessionId: "",
     isRecording: false,
     isReplaying: false,
     startAt: 0,
@@ -243,6 +255,7 @@
     controlWindow: null,
     recordButton: null,
     replayButton: null,
+    sessionList: null,
     scrollIndicator: null,
     scrollIndicatorTimer: 0,
     meta: readJson(META_KEY, {}),
@@ -266,7 +279,9 @@
   }
 
   function persist() {
+    syncCurrentSessionEvents();
     writeJson(STORAGE_KEY, state.events);
+    writeJson(SESSIONS_KEY, state.sessions);
     writeJson(META_KEY, {
       ...state.meta,
       isRecording: state.isRecording,
@@ -288,6 +303,46 @@
     window.clearTimeout(state.persistTimer);
     state.persistTimer = 0;
     persist();
+  }
+
+  function formatSessionLabel(date = new Date()) {
+    return date.toLocaleTimeString("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+  }
+
+  function getCurrentSession() {
+    return state.sessions.find((session) => session.id === state.currentSessionId) || null;
+  }
+
+  function syncCurrentSessionEvents() {
+    const session = getCurrentSession();
+    if (!session) return;
+
+    session.events = [...state.events];
+    session.updatedAt = Date.now();
+  }
+
+  function createRecordingSession() {
+    const now = Date.now();
+    const session = {
+      id: `recording-${now}`,
+      label: formatSessionLabel(new Date(now)),
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+    };
+
+    state.currentSessionId = session.id;
+    state.sessions = [session, ...state.sessions].slice(0, MAX_SESSIONS);
+    if (!state.controlWindow || state.controlWindow.closed) openControlWindow();
+    renderSessionButtons();
+    persist();
+
+    return session;
   }
 
   function cssEscape(value) {
@@ -911,9 +966,7 @@
   function syncControlState() {
     if (state.controlWindow?.closed) {
       state.controlWindow = null;
-      state.recordButton = null;
-      state.replayButton = null;
-      return;
+      state.sessionList = null;
     }
 
     if (!state.recordButton || !state.replayButton) return;
@@ -976,6 +1029,29 @@
     return { wrap, recordButton, replayButton };
   }
 
+  function renderSessionButtons() {
+    if (state.controlWindow?.closed) {
+      state.controlWindow = null;
+      state.sessionList = null;
+      return;
+    }
+
+    if (!state.sessionList) return;
+
+    const ownerDocument = state.sessionList.ownerDocument;
+    state.sessionList.textContent = "";
+
+    for (const session of state.sessions) {
+      const button = ownerDocument.createElement("button");
+      button.type = "button";
+      button.className = "flow-session-button";
+      button.textContent = session.label;
+      button.title = new Date(session.startedAt).toLocaleString("ko-KR");
+      button.addEventListener("click", () => replaySession(session.id));
+      state.sessionList.append(button);
+    }
+  }
+
   function openControlWindow() {
     try {
       const popup = window.open("", CONTROL_WINDOW_NAME, CONTROL_WINDOW_FEATURES);
@@ -989,31 +1065,32 @@
             <title>Flow Controls</title>
             <style>${POPUP_CONTROL_CSS}</style>
           </head>
-          <body></body>
+          <body>
+            <div id="flow-session-list" class="flow-session-list"></div>
+          </body>
         </html>`);
       popup.document.close();
       popup.addEventListener("beforeunload", () => {
         if (state.controlWindow === popup) {
           state.controlWindow = null;
-          state.recordButton = null;
-          state.replayButton = null;
+          state.sessionList = null;
         }
       });
       state.controlWindow = popup;
+      state.sessionList = popup.document.getElementById("flow-session-list");
+      renderSessionButtons();
 
       return popup;
     } catch (error) {
-      console.warn("[FlowTester] 컨트롤 팝업을 열 수 없어 페이지 안에 버튼을 표시합니다.", error);
+      console.warn("[FlowTester] 녹화 시간 팝업을 열 수 없습니다.", error);
       return null;
     }
   }
 
   function createControl() {
-    const popup = openControlWindow();
-    const ownerDocument = popup?.document || document;
-    const { wrap, recordButton, replayButton } = createControlElements(ownerDocument);
+    const { wrap, recordButton, replayButton } = createControlElements(document);
 
-    ownerDocument.body.append(wrap);
+    document.body.append(wrap);
     state.recordButton = recordButton;
     state.replayButton = replayButton;
     syncControlState();
@@ -1024,6 +1101,9 @@
     state.isReplaying = false;
     state.isRecording = true;
     state.events = append ? state.events : [];
+    if (!append || !getCurrentSession()) {
+      createRecordingSession();
+    }
     const lastEvent = state.events.length ? state.events[state.events.length - 1] : null;
     const lastAt = lastEvent?.at || 0;
     state.startAt = performance.now() - lastAt;
@@ -1052,6 +1132,19 @@
     state.replayAbort = true;
     state.isReplaying = false;
     syncControlState();
+  }
+
+  function replaySession(sessionId) {
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session || !session.events?.length) return;
+
+    if (state.isRecording) stopRecording();
+    if (state.isReplaying) stopReplay();
+
+    state.currentSessionId = session.id;
+    state.events = [...session.events];
+    syncControlState();
+    replay();
   }
 
   async function replay({ resumeRecording = false } = {}) {
@@ -1117,11 +1210,14 @@
 
   function boot() {
     state.events = readJson(STORAGE_KEY, []);
+    state.sessions = readJson(SESSIONS_KEY, state.sessions);
+    if (!Array.isArray(state.sessions)) state.sessions = [];
 
     patchNetworkTracking();
     watchDomQuietTime();
     ensureControlStyles();
     createControl();
+    openControlWindow();
     attachListeners();
 
     if (state.meta.isRecording) {
@@ -1156,9 +1252,13 @@
       window.clearTimeout(state.persistTimer);
       state.persistTimer = 0;
       state.events = [];
+      state.sessions = [];
+      state.currentSessionId = "";
       state.meta = {};
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SESSIONS_KEY);
       localStorage.removeItem(META_KEY);
+      renderSessionButtons();
       syncControlState();
     },
     getEvents: () => [...state.events],
